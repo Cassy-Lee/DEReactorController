@@ -34,8 +34,8 @@ end
 
 -- Predict
 temperature = 8000
-maxFuelConversion = 144 * 9 * 8
-maxEnergySaturation = maxFuelConversion * 96.45061728395062 * 1000
+maxFuelConversion = 144*9*8
+maxEnergySaturation = maxFuelConversion*96450.61728395062
 temp50 = math.min(temperature / 200, 99)
 tempRiseResist = (temp50 ^ 4) / (100 - temp50)
 DERIV_CONST = -99 / (maxEnergySaturation * 10000)
@@ -82,12 +82,35 @@ function bestOutputRate(info, bestSatRate)
 end
 
 function bestInputRate(info, bestSatRate)
-  return math.max(1-bestSatRate,0.01)*baseMaxGen/10.923556/0.95
+  local actualSatRate = info.energySaturation / maxEnergySaturation
+  local satRate = math.min(actualSatRate,bestSatRate) -- If actually having lower sat rate and need more energy
+  local normalRate = math.max(1-satRate,0.01)*baseMaxGen/10.923556/0.95
+  if info.temperature > 8000 then -- If extra charge required
+    local extraTemp = info.temperature-8000
+    local tempCoe = 1+extraTemp*extraTemp*0.0000025
+    return normalRate*tempCoe
+  end
+  return normalRate
 end
 -- Predict end
 
+autoStopFuel = maxFuelConversion*0.8
+
+lastSleep=nil
+function sleep0()
+  if not lastSleep or os.clock()>lastSleep then
+    os.sleep(0)
+  else
+    os.sleep(0.05)
+  end
+end
+
 function main()
   local info = reactorInfo()
+  if info.fuelConversion>autoStopFuel then
+    print("Not enough fuel, won't start.")
+    return
+  end
   if info.status~="running" then
     inGate.setOverrideEnabled(true)
     outGate.setOverrideEnabled(true)
@@ -98,11 +121,15 @@ function main()
       info = reactorInfo()
       if info.status=="running" then break end
       if info.temperature>=2000 and info.fieldStrength>=info.maxFieldStrength*0.49 and info.energySaturation>=info.maxEnergySaturation*0.49 then reactor.activateReactor() end
-      os.sleep(0)
+      sleep0()
     end
   end
   while info.status=="running" do
     info = reactorInfo()
+    if info.fuelConversion>autoStopFuel then
+      print("Not enough fuel, auto stop")
+      break
+    end
     if info.temperature>=8300 or info.fieldStrength<=info.maxFieldStrength*0.02 then
       setOut(0)
       setIn(64000000)
@@ -124,7 +151,28 @@ function main()
     local bestSatRate = bestSat/maxEnergySaturation
     setIn(bestInputRate(info,bestSatRate))
     setOut(bestOutputRate(info,bestSatRate))
-    os.sleep(0)
+    sleep0()
+  end
+  while info.status=="running" do
+    info = reactorInfo()
+    if info.temperature<=6000 then
+      reactor.stopReactor()
+      break
+    end
+    if info.temperature>=8300 or info.fieldStrength<=info.maxFieldStrength*0.02 then
+      setOut(0)
+      setIn(64000000)
+      reactor.stopReactor()
+      print("Emergency stop!")
+      return nil
+    end
+    setIn(bestInputRate(info,0.99))
+    setOut(bestOutputRate(info,0.99))
+    sleep0()
+  end
+  while info.status=="stopping" do
+    setIn(bestInputRate(reactorInfo(),0.99))
+    sleep0()
   end
 end
 
