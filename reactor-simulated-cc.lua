@@ -11,74 +11,48 @@ function setIn(value)
     if value<0
     then
         inGate.setFlowOverride(0)
-        curIn=0
     else
         if(value>64000000)
         then
             inGate.setFlowOverride(64000000)
         else
             inGate.setFlowOverride(value)
-            curIn=value
         end
     end
 end
 function setOut(value)
     if value<0 then
         outGate.setFlowOverride(0)
-        curOut=0
     else
         outGate.setFlowOverride(value)
-        curOut=value
     end
 end
 
 -- Predict
-temperature = 8000
 maxFuelConversion = 144*9*8
 maxEnergySaturation = maxFuelConversion*96450.61728395062
-temp50 = math.min(temperature / 200, 99)
-tempRiseResist = (temp50 ^ 4) / (100 - temp50)
-DERIV_CONST = -99 / (maxEnergySaturation * 10000)
 
-prevEnergySaturation=nil
-function bestEnergySaturation(info)
-    local fuelConversion = info.fuelConversion
-    local convLVL = fuelConversion / maxFuelConversion * 1.3 - 0.3
-    local function f(E)
-        local negCSat = 99 - (E / maxEnergySaturation) * 99
-        local tempRiseExpo = (negCSat ^ 3) / (100 - negCSat) + 444.7
-        return (tempRiseExpo - tempRiseResist * (1 - convLVL) + convLVL * 1000) / 10000
+u=2910897/math.sqrt(686339028913329000)
+v=1/2910897^(1/3)
+fuelCoe=1.3/maxFuelConversion -- convLVL=conv*fuelCoe-0.3
+function cbrt(x) -- cbrt for neg/pos
+    if x<0 then return -(-x)^(1/3)
+    else return x^(1/3)
     end
-    local function df(E)
-        local negCSat = 99 - (E / maxEnergySaturation) * 99
-        local num = negCSat^2 * (300 - 2 * negCSat)
-        local den = (100 - negCSat)^2
-        return DERIV_CONST * num / den
-    end
-    local E = prevEnergySaturation or 0
-    local maxIter = 50
-    for i = 1, maxIter do
-        local fE = f(E)
-        local dE = df(E)
-        if not dE or dE == 0 or dE ~= dE or math.abs(dE) < 1e-12 then
-            error("derivative breakdown")
-        end
-        local nextE = E - fE / dE
-        if math.abs(nextE - E) < 1.0 then
-            prevEnergySaturation = nextE
-            return nextE
-        end
-        E = nextE
-    end
-    prevEnergySaturation = E
-    return E
+end
+function bestEnergySaturationRate(info)
+    local A=info.fuelConversion*fuelCoe-0.3
+    local kA=1310000*A
+    local cA=6550000*A-6333295
+    local utr=u*(kA-1266659)*math.sqrt(3291659-kA)
+    return 1+v*(cbrt(cA+utr)+cbrt(cA-utr))
 end
 
 baseMaxGen=math.floor(maxEnergySaturation*0.015)
 
 function bestOutputRate(info, bestSatRate)
-  local convLVL = info.fuelConversion / maxFuelConversion * 1.3 - 0.3
-  return baseMaxGen * (1 + convLVL * 2) * (1 - bestSatRate)
+  local convLVL=info.fuelConversion*fuelCoe-0.3
+  return baseMaxGen*(1+convLVL*2)*(1-bestSatRate)
 end
 
 function bestInputRate(info, bestSatRate)
@@ -103,6 +77,7 @@ function sleep0()
   else
     os.sleep(0.05)
   end
+  lastSleep=os.clock()
 end
 
 function main()
@@ -130,25 +105,21 @@ function main()
       print("Not enough fuel, auto stop")
       break
     end
-    if info.temperature>=8300 or info.fieldStrength<=info.maxFieldStrength*0.02 then
+    if info.temperature>=8100 or info.fieldStrength<=info.maxFieldStrength*0.02 then
       setOut(0)
       setIn(64000000)
       reactor.stopReactor()
       print("Emergency stop!")
-      return nil
+      return
     end
-    local controllable, bestSat = pcall(bestEnergySaturation,info)
-    if bestSat < 0 or bestSat > maxEnergySaturation then
-      controllable = false
-    end
-    if not controllable then
+    local bestSatRate = bestEnergySaturationRate(info)
+    if not (0<bestSatRate and bestSatRate<1) then
       setOut(0)
       setIn(64000000)
       reactor.stopReactor()
       print("Emergency stop!(Uncontrollable)")
-      return nil
+      return
     end
-    local bestSatRate = bestSat/maxEnergySaturation
     setIn(bestInputRate(info,bestSatRate))
     setOut(bestOutputRate(info,bestSatRate))
     sleep0()
@@ -159,12 +130,12 @@ function main()
       reactor.stopReactor()
       break
     end
-    if info.temperature>=8300 or info.fieldStrength<=info.maxFieldStrength*0.02 then
+    if info.temperature>=8100 or info.fieldStrength<=info.maxFieldStrength*0.02 then
       setOut(0)
       setIn(64000000)
       reactor.stopReactor()
       print("Emergency stop!")
-      return nil
+      return
     end
     setIn(bestInputRate(info,0.99))
     setOut(bestOutputRate(info,0.99))
